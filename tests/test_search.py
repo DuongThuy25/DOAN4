@@ -12,75 +12,95 @@ from queries.search_queries import query_products_by_keyword
 from utils.data_reader import read_csv_data
 from utils.test_result_writer_excel import write_test_results_excel
 
-raw_data = read_csv_data("data/Data_Search.csv")
+# Đọc dữ liệu từ CSV
+raw = read_csv_data("data/Data_Search.csv")
 test_data = [
-    (i + 1, row[0].strip())
-    for i, row in enumerate(raw_data)
-    if len(row) >= 1 and row[0].strip() != ""
+    (i + 1, row[0].strip() if row and row[0] else "")
+    for i, row in enumerate(raw)
 ]
+
 
 all_results = []
 
+def normalize(lst):
+    return sorted(s.strip().casefold() for s in lst)
+
 @pytest.mark.parametrize("index,keyword", test_data)
 def test_search(index, keyword, driver):
-    login_page = LoginPage(driver)
-    login_page.open("http://127.0.0.1:5500/log%20in/log%20in.html")
-    login_page.login("dương thuỳ", "123")
-
-    try:
-        WebDriverWait(driver, 5).until(EC.alert_is_present())
-        driver.switch_to.alert.accept()
-    except TimeoutException:
-        print("Không có alert hiển thị sau khi đăng nhập.")
-
-    try:
-        sanpham_link = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.LINK_TEXT, "Sản phẩm"))
-        )
-        sanpham_link.click()
-    except:
-        pytest.fail("Không tìm thấy hoặc không click được liên kết 'Sản phẩm' sau khi đăng nhập")
-
-    search_page = SearchPage(driver)
-    search_page.enter_search_keyword(keyword)
-
-    ui_product_names = []
-    while True:
-        ui_product_names.extend(search_page.get_all_product_names())
-        if search_page.has_next_page():
-            search_page.go_to_next_page()
-        else:
-            break
-
-    db_product_names = query_products_by_keyword(keyword)
     test_name = f"test_search_{index}"
-    screenshot_path = ""
     status = "PASS"
+    screenshot = ""
+    db_raw = []
+    ui_raw = []
 
-    if sorted(ui_product_names) != sorted(db_product_names):
+    # Đăng nhập
+    lp = LoginPage(driver)
+    lp.open("http://127.0.0.1:5500/log%20in/log%20in.html")
+    lp.login("dương thuỳ", "123")
+
+    try:
+        WebDriverWait(driver, 5).until(EC.alert_is_present()).accept()
+    except TimeoutException:
+        pass
+
+    # Chuyển sang trang Sản phẩm
+    WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable((By.LINK_TEXT, "Sản phẩm"))
+    ).click()
+
+    # Truy vấn DB
+    try:
+        db_raw = query_products_by_keyword(keyword)
+        db_clean = normalize(db_raw)
+    except Exception as e:
         status = "FAIL"
-        screenshot_dir = "report/screenshots"
-        os.makedirs(screenshot_dir, exist_ok=True)
-        screenshot_path = os.path.join(screenshot_dir, f"{test_name}.png")
-        driver.save_screenshot(screenshot_path)
+        screenshot = _capture(driver, test_name)
+        _record_result(test_name, keyword, db_raw, ui_raw, status, screenshot)
+        pytest.fail(f"[{test_name}] Lỗi truy vấn DB: {e}")
 
+    # Lấy kết quả từ UI
+    try:
+        sp = SearchPage(driver)
+        sp.enter_search_keyword(keyword)
+        ui_raw = sp.get_all_products_across_pages(keyword)  # ✅ truyền keyword vào đây
+        ui_clean = normalize(ui_raw)
+    except Exception as e:
+        status = "FAIL"
+        screenshot = _capture(driver, test_name)
+        _record_result(test_name, keyword, db_raw, ui_raw, status, screenshot)
+        pytest.fail(f"[{test_name}] Lỗi lấy dữ liệu UI: {e}")
+
+    # So sánh kết quả
+    if ui_clean != db_clean:
+        status = "FAIL"
+        screenshot = _capture(driver, test_name)
+        _record_result(test_name, keyword, db_raw, ui_raw, status, screenshot)
+        pytest.fail(
+            f"[{test_name}] UI & DB mismatch.\n"
+            f"DB ({len(db_clean)}): {db_clean}\n"
+            f"UI ({len(ui_clean)}): {ui_clean}"
+        )
+
+    _record_result(test_name, keyword, db_raw, ui_raw, status, screenshot)
+
+def _capture(driver, name):
+    path = f"report/screenshots/{name}.png"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    driver.save_screenshot(path)
+    return path
+
+def _record_result(test_name, keyword, db_list, ui_list, status, screenshot_path):
     all_results.append({
         "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Test Name": test_name,
+        "Test Case": test_name,
         "Keyword": keyword,
-        "Expected Count (DB)": len(db_product_names),
-        "Actual Count (UI)": len(ui_product_names),
+        "DB Count": len(db_list),
+        "UI Count": len(ui_list),
+        "DB Result": ", ".join(db_list),
+        "UI Result": ", ".join(ui_list),
         "Status": status,
-        "Missing In UI": ", ".join(set(db_product_names) - set(ui_product_names)),
-        "Unexpected In UI": ", ".join(set(ui_product_names) - set(db_product_names)),
         "Screenshot": screenshot_path if status == "FAIL" else ""
     })
-
-    assert status == "PASS", (
-        f"[{test_name}] UI & DB mismatch.\n"
-        f"Expected (DB): {db_product_names}\n"
-        f"Actual (UI):   {ui_product_names}"
-    )
 
 def teardown_module(module):
     write_test_results_excel(
