@@ -1,0 +1,5 @@
+username,password,product_name,initial_quantity,update_action,expected_quantity,expected_total
+dương thuỳ,123,Cà phê sữa đá,1,+,2,680000
+dương thuỳ,123,Cà phê đen đá,2,-,1,25000
+dương thuỳ,123,phindi kem sữa,1,+,3,105000
+dương thuỳ,123,Cà phê đen đá,1,edit,4,100000
